@@ -14,42 +14,21 @@ import torch.nn.functional as F
 
 import time
 
-torch.backends.cudnn.benchmark = True
-
-CHAR_SIZE = 128
-SENT_LENGTH = 4
-HIDDEN_SIZE = 64
-EPOCH_NUM = 100
-
-BATCH_SIZE = 64
-
-
 def get_now_time():
     a = time.time()
     return time.ctime(a)
-
 
 def seq_padding(X):
     L = [len(x) for x in X]
     ML = max(L)
     # print("ML",ML)
-    return [x + [0] * (ML - len(x)) for x in X]
-
+    return [x + [0] * (ML - len(x)) for x in X]  # 和最长的差多少就补0
 
 def seq_padding_vec(X):
     L = [len(x) for x in X]
     ML = max(L)
     # print("ML",ML)
     return [x + [[1, 0]] * (ML - len(x)) for x in X]
-
-
-train_data = json.load(open('./train_data_me.json',encoding='utf-8'))
-dev_data = json.load(open('./dev_data_me.json',encoding='utf-8'))
-id2predicate, predicate2id = json.load(open('./all_50_schemas_me.json',encoding='utf-8'))
-id2predicate = {int(i): j for i, j in id2predicate.items()}
-id2char, char2id = json.load(open('./all_chars_me.json',encoding='utf-8'))
-num_classes = len(id2predicate)
-
 
 class data_generator:
     def __init__(self, data, batch_size=64):
@@ -78,38 +57,37 @@ class data_generator:
                     key = (subjectid, subjectid + len(sp[0]))  # 头实体起止位置
                     if key not in items:
                         items[key] = []
-                    items[key].append((objectid, objectid + len(sp[2]), predicate2id[sp[1]]))
+                    items[key].append((objectid, objectid + len(sp[2]), predicate2id[sp[1]]))  # 把尾实体放到item对应的头实体的数组里面
 
             if items:
-                T.append([char2id.get(c, 1) for c in text])  # 1是unk，0是padding
+                T.append([char2id.get(c, 1) for c in text])  # 拿每一个字的id,未编制的字符找不到就是1，1是unk，0是padding
                 # s1, s2 = [[1,0]] * len(text), [[1,0]] * len(text)
                 s1, s2 = [0] * len(text), [0] * len(text)
                 for j in items:
                     # s1[j[0]] = [0,1]
                     # s2[j[1]-1] = [0,1]
-                    s1[j[0]] = 1
+                    s1[j[0]] = 1  # 把头实体的起始位置都标记了出来？还放在了不同的列表里面
                     s2[j[1] - 1] = 1
                 # print(items.keys())
-                k1, k2 = choice(list(items.keys()))
+                k1, k2 = choice(list(items.keys()))  # 随机抽取一个元素，k1，k2是头实体的起始位置
                 o1, o2 = [0] * len(text), [0] * len(text)  # 0是unk类（共49+1个类）
                 for j in items[(k1, k2)]:
                     o1[j[0]] = j[2]
-                    o2[j[1] - 1] = j[2]
-                S1.append(s1)
-                S2.append(s2)
+                    o2[j[1] - 1] = j[2]  # 在o1,o2中把为实体位置标记了出来，用的是关系类型标记的。
+                S1.append(s1)  # 头实体题开始位置的onehot
+                S2.append(s2)  # 头实体题结束位置的onehot
                 K1.append([k1])
                 K2.append([k2 - 1])
                 O1.append(o1)
                 O2.append(o2)
 
-        T = np.array(seq_padding(T))
-        S1 = np.array(seq_padding(S1))
-        S2 = np.array(seq_padding(S2))
-        O1 = np.array(seq_padding(O1))
-        O2 = np.array(seq_padding(O2))
+        T = np.array(seq_padding(T)) # T是句子每个字对应的id组成的数组，不够长度的补0
+        S1 = np.array(seq_padding(S1))  # 头实体题开始位置的onehot
+        S2 = np.array(seq_padding(S2))  # 头实体题结束位置的onehot
+        O1 = np.array(seq_padding(O1))  # 尾实体题开始位置的onehot
+        O2 = np.array(seq_padding(O2))  # 尾实体题结束位置的onehot
         K1, K2 = np.array(K1), np.array(K2)
         return [T, S1, S2, K1, K2, O1, O2]
-
 
 class myDataset(Data.Dataset):
     """
@@ -134,7 +112,6 @@ class myDataset(Data.Dataset):
     def __len__(self):
         return self.len
 
-
 def collate_fn(data):
     t = np.array([item[0] for item in data], np.int32)
     s1 = np.array([item[1] for item in data], np.int32)
@@ -153,32 +130,6 @@ def collate_fn(data):
         'O1': torch.LongTensor(o1),
         'O2': torch.LongTensor(o2),
     }
-
-
-dg = data_generator(train_data)  # 实例化这个类吧
-T, S1, S2, K1, K2, O1, O2 = dg.pro_res()
-# print("len",len(T))
-
-torch_dataset = myDataset(T, S1, S2, K1, K2, O1, O2)
-loader = Data.DataLoader(
-    dataset=torch_dataset,  # torch TensorDataset format
-    batch_size=BATCH_SIZE,  # mini batch size
-    shuffle=True,  # random shuffle for training
-    num_workers=8,
-    collate_fn=collate_fn,  # subprocesses for loading data
-)
-
-# print("len",len(id2char))
-s_m = model.s_model(len(char2id) + 2, CHAR_SIZE, HIDDEN_SIZE).cuda()
-po_m = model.po_model(len(char2id) + 2, CHAR_SIZE, HIDDEN_SIZE, 49).cuda()
-params = list(s_m.parameters())
-
-params += list(po_m.parameters())
-optimizer = torch.optim.Adam(params, lr=0.001)
-
-loss = torch.nn.CrossEntropyLoss().cuda()
-b_loss = torch.nn.BCEWithLogitsLoss().cuda()
-
 
 def extract_items(text_in):
     R = []
@@ -230,66 +181,104 @@ def evaluate():
     return 2 * A / (B + C), A / B, A / C
 
 
-best_f1 = 0
-best_epoch = 0
+if __name__ == '__main__':
+    torch.backends.cudnn.benchmark = True
+    CHAR_SIZE = 128
+    SENT_LENGTH = 4
+    HIDDEN_SIZE = 64
+    EPOCH_NUM = 100
+    BATCH_SIZE = 64
 
-for i in range(EPOCH_NUM):
-    for step, loader_res in tqdm(iter(enumerate(loader))):
-        # print(get_now_time())
-        t_s = loader_res["T"].cuda()
-        k1 = loader_res["K1"].cuda()
-        k2 = loader_res["K2"].cuda()
-        s1 = loader_res["S1"].cuda()
-        s2 = loader_res["S2"].cuda()
-        o1 = loader_res["O1"].cuda()
-        o2 = loader_res["O2"].cuda()
+    train_data = json.load(open('./train_data_me.json',encoding='utf-8'))
+    dev_data = json.load(open('./dev_data_me.json',encoding='utf-8'))
+    id2predicate, predicate2id = json.load(open('./all_50_schemas_me.json',encoding='utf-8'))
+    id2predicate = {int(i): j for i, j in id2predicate.items()}
+    id2char, char2id = json.load(open('./all_chars_me.json',encoding='utf-8'))
+    num_classes = len(id2predicate)
+    dg = data_generator(train_data)  # 实例化这个类吧
+    T, S1, S2, K1, K2, O1, O2 = dg.pro_res()
+    # print("len",len(T))
 
-        ps_1, ps_2, t, t_max, mask = s_m(t_s)
+    torch_dataset = myDataset(T, S1, S2, K1, K2, O1, O2)
+    loader = Data.DataLoader(
+        dataset=torch_dataset,  # torch TensorDataset format
+        batch_size=BATCH_SIZE,  # mini batch size
+        shuffle=True,  # random shuffle for training
+        num_workers=8,
+        collate_fn=collate_fn,  # subprocesses for loading data
+    )
 
-        t, t_max, k1, k2 = t.cuda(), t_max.cuda(), k1.cuda(), k2.cuda()
-        po_1, po_2 = po_m(t, t_max, k1, k2)
+    # print("len",len(id2char))
+    s_m = model.s_model(len(char2id) + 2, CHAR_SIZE, HIDDEN_SIZE).cuda()
+    po_m = model.po_model(len(char2id) + 2, CHAR_SIZE, HIDDEN_SIZE, 49).cuda()
+    params = list(s_m.parameters())
 
-        ps_1 = ps_1.cuda()
-        ps_2 = ps_2.cuda()
-        po_1 = po_1.cuda()
-        po_2 = po_2.cuda()
+    params += list(po_m.parameters())
+    optimizer = torch.optim.Adam(params, lr=0.001)
 
-        s1 = torch.unsqueeze(s1, 2)
-        s2 = torch.unsqueeze(s2, 2)
+    loss = torch.nn.CrossEntropyLoss().cuda()
+    b_loss = torch.nn.BCEWithLogitsLoss().cuda()
 
-        s1_loss = b_loss(ps_1, s1)
-        s1_loss = torch.sum(s1_loss.mul(mask)) / torch.sum(mask)
-        s2_loss = b_loss(ps_2, s2)
-        s2_loss = torch.sum(s2_loss.mul(mask)) / torch.sum(mask)
+    best_f1 = 0
+    best_epoch = 0
 
-        po_1 = po_1.permute(0, 2, 1)
-        po_2 = po_2.permute(0, 2, 1)
+    for i in range(EPOCH_NUM):
+        for step, loader_res in tqdm(iter(enumerate(loader))):
+            print(get_now_time())
+            t_s = loader_res["T"].cuda()
+            k1 = loader_res["K1"].cuda()
+            k2 = loader_res["K2"].cuda()
+            s1 = loader_res["S1"].cuda()
+            s2 = loader_res["S2"].cuda()
+            o1 = loader_res["O1"].cuda()
+            o2 = loader_res["O2"].cuda()
 
-        o1_loss = loss(po_1, o1)
-        o1_loss = torch.sum(o1_loss.mul(mask[:, :, 0])) / torch.sum(mask)
-        o2_loss = loss(po_2, o2)
-        o2_loss = torch.sum(o2_loss.mul(mask[:, :, 0])) / torch.sum(mask)
+            ps_1, ps_2, t, t_max, mask = s_m(t_s)  # 放进模型
 
-        loss_sum = 2.5 * (s1_loss + s2_loss) + (o1_loss + o2_loss)
+            t, t_max, k1, k2 = t.cuda(), t_max.cuda(), k1.cuda(), k2.cuda()
+            po_1, po_2 = po_m(t, t_max, k1, k2)   # 放进模型
 
-        # if step % 500 == 0:
-        # 	torch.save(s_m, 'models_real/s_'+str(step)+"epoch_"+str(i)+'.pkl')
-        # 	torch.save(po_m, 'models_real/po_'+str(step)+"epoch_"+str(i)+'.pkl')
+            ps_1 = ps_1.cuda()
+            ps_2 = ps_2.cuda()
+            po_1 = po_1.cuda()
+            po_2 = po_2.cuda()
 
-        optimizer.zero_grad()
+            s1 = torch.unsqueeze(s1, 2)
+            s2 = torch.unsqueeze(s2, 2)
 
-        loss_sum.backward()
-        optimizer.step()
+            s1_loss = b_loss(ps_1, s1)
+            s1_loss = torch.sum(s1_loss.mul(mask)) / torch.sum(mask)
+            s2_loss = b_loss(ps_2, s2)
+            s2_loss = torch.sum(s2_loss.mul(mask)) / torch.sum(mask)
 
-    torch.save(s_m, 'models_real/s_' + str(i) + '.pkl')
-    torch.save(po_m, 'models_real/po_' + str(i) + '.pkl')
-    f1, precision, recall = evaluate()
+            po_1 = po_1.permute(0, 2, 1)
+            po_2 = po_2.permute(0, 2, 1)
 
-    print("epoch:", i, "loss:", loss_sum.data)
+            o1_loss = loss(po_1, o1)
+            o1_loss = torch.sum(o1_loss.mul(mask[:, :, 0])) / torch.sum(mask)
+            o2_loss = loss(po_2, o2)
+            o2_loss = torch.sum(o2_loss.mul(mask[:, :, 0])) / torch.sum(mask)
 
-    if f1 >= best_f1:
-        best_f1 = f1
-        best_epoch = i
+            loss_sum = 2.5 * (s1_loss + s2_loss) + (o1_loss + o2_loss)
 
-    print('f1: %.4f, precision: %.4f, recall: %.4f, bestf1: %.4f, bestepoch: %d \n ' % (
-    f1, precision, recall, best_f1, best_epoch))
+            # if step % 500 == 0:
+            # 	torch.save(s_m, 'models_real/s_'+str(step)+"epoch_"+str(i)+'.pkl')
+            # 	torch.save(po_m, 'models_real/po_'+str(step)+"epoch_"+str(i)+'.pkl')
+
+            optimizer.zero_grad()
+
+            loss_sum.backward()
+            optimizer.step()
+
+        torch.save(s_m, 'models_real/s_' + str(i) + '.pkl')
+        torch.save(po_m, 'models_real/po_' + str(i) + '.pkl')
+        f1, precision, recall = evaluate()
+
+        print("epoch:", i, "loss:", loss_sum.data)
+
+        if f1 >= best_f1:
+            best_f1 = f1
+            best_epoch = i
+
+        print('f1: %.4f, precision: %.4f, recall: %.4f, bestf1: %.4f, bestepoch: %d \n ' % (
+        f1, precision, recall, best_f1, best_epoch))

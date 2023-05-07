@@ -98,31 +98,17 @@ class s_model(nn.Module):
         mask.requires_grad = False
   
         outs = self.embeds(t)
-
         t = outs
         t = self.fc1_dropout(t)
-
-        
-
         t = t.mul(mask) # (batch_size,sent_len,char_size)
-
         t, (h_n, c_n) = self.lstm1(t,None)
         t, (h_n, c_n) = self.lstm2(t,None)
-
         t_max,t_max_index = seq_max_pool([t,mask])
-  
-
         t_dim = list(t.size())[-1]
         h = seq_and_vec([t, t_max])
-  
-
         h = h.permute(0,2,1)
-       
         h = self.conv1(h)
-    
         h = h.permute(0,2,1)
-
-
         ps1 = self.fc_ps1(h)
         ps2 = self.fc_ps2(h)
         
